@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/**"
+      - "src/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "include/**"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "src/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "include/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Check formatting
+        run: zig fmt --check src build.zig
+
+      - name: Run tests
+        run: zig build test --summary all
