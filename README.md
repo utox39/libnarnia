@@ -124,7 +124,7 @@ pub fn main(init: std.process.Init) !void {
 A long-running program would park in `scheduler.wait()` instead of sleeping;
 it returns once another thread calls `scheduler.stop()`.
 
-Full API documentation: [libnarnia-docs]()
+Full API documentation: [libnarnia-docs](https://utox39.github.io/libnarnia/)
 
 Or:
 
