@@ -11,7 +11,7 @@
   - [Build](#build)
   - [Compile and link against it](#compile-and-link-against-it)
   - [Cross-compiling](#cross-compiling)
-  - [pkg-config / CMake](#pkg-config-cmake)
+  - [pkg-config and CMake](#pkg-config-and-cmake)
   - [C API usage](#c-api-usage)
 - [Examples](#examples)
   - [Zig example](#zig-example)
@@ -255,7 +255,7 @@ same way from that platform's toolchain.
 zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast
 ```
 
-### pkg-config / CMake
+### pkg-config and CMake
 
 There is no generated `.pc` or CMake package config. Point your build system at
 `zig-out/include` and `zig-out/lib` directly — in CMake:
