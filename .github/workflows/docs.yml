@@ -5,6 +5,12 @@ name: libnarnia docs
 on:
   push:
     branches: [master]
+    paths:
+      - ".github/workflows/**"
+      - "src/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "include/**"
 
   # Allow manually starting the workflow.
   workflow_dispatch:
