@@ -1,6 +1,6 @@
 /*
- * Mirrors src/main.zig through the C bindings: schedule a job, let it fire,
- * remove it, schedule a second one, then shut down.
+ * Schedule a job, let it fire, remove it, schedule a second one, then shut
+ * down.
  *
  * The one addition is the shutdown path. src/main.zig just falls off the end
  * of main; here a helper thread calls narnia_scheduler_stop while the main
