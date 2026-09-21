@@ -223,8 +223,8 @@ fn toSchedule(cs: CSchedule) ?Schedule {
 
             break :blk .{
                 .hourly = .{
-                    .minutes = m_s.minute,
-                    .seconds = m_s.second,
+                    .minute = m_s.minute,
+                    .second = m_s.second,
                 },
             };
         },
@@ -249,7 +249,7 @@ fn toSchedule(cs: CSchedule) ?Schedule {
             const h_m_s = hourMinSec(w.hour, w.minute, w.second) orelse break :blk null;
 
             break :blk .{ .weekly = .{
-                .day = @enumFromInt(@as(u3, @intCast(w.week_day))),
+                .week_day = @enumFromInt(@as(u3, @intCast(w.week_day))),
                 .hour = h_m_s.hour,
                 .minute = h_m_s.minute,
                 .second = h_m_s.second,
@@ -266,7 +266,7 @@ fn toSchedule(cs: CSchedule) ?Schedule {
             const h_m_s = hourMinSec(m.hour, m.minute, m.second) orelse break :blk null;
 
             break :blk .{ .monthly = .{
-                .day = day,
+                .day_of_month = day,
                 .hour = h_m_s.hour,
                 .minute = h_m_s.minute,
                 .second = h_m_s.second,
@@ -286,7 +286,7 @@ fn toSchedule(cs: CSchedule) ?Schedule {
 
             break :blk .{ .yearly = .{
                 .month = @enumFromInt(@as(u4, @intCast(y.month))),
-                .day = day,
+                .day_of_month = day,
                 .hour = h_m_s.hour,
                 .minute = h_m_s.minute,
                 .second = h_m_s.second,
@@ -593,17 +593,17 @@ test "toSchedule rejects out-of-range fields C can express but Zig cannot" {
 
 test "toSchedule maps fields onto the right variant" {
     const weekly = toSchedule(narnia_weekly(3, 17, 45, 30)).?;
-    try testing.expectEqual(schedule_mod.WeekDay.WEDNESDAY, weekly.weekly.day);
+    try testing.expectEqual(schedule_mod.WeekDay.WEDNESDAY, weekly.weekly.week_day);
     try testing.expectEqual(@as(u5, 17), weekly.weekly.hour);
     try testing.expectEqual(@as(u6, 45), weekly.weekly.minute);
     try testing.expectEqual(@as(u6, 30), weekly.weekly.second);
 
     const monthly = toSchedule(narnia_monthly(last_day_sentinel, 1, 2, 3)).?;
-    try testing.expectEqual(schedule_mod.DayOfMonth.last_day, monthly.monthly.day);
+    try testing.expectEqual(schedule_mod.DayOfMonth.last_day, monthly.monthly.day_of_month);
 
     const yearly = toSchedule(narnia_yearly(12, 25, 0, 0, 0)).?;
     try testing.expectEqual(std.time.epoch.Month.dec, yearly.yearly.month);
-    try testing.expectEqual(@as(u5, 25), yearly.yearly.day.day);
+    try testing.expectEqual(@as(u5, 25), yearly.yearly.day_of_month.day);
 }
 
 test "a job added through the C API fires and its destroy-notify runs" {
