@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(c_example);
 
-    const c_example_step = b.step("example", "Run the C example");
+    const c_example_step = b.step("c-example", "Run the C example");
     c_example_step.dependOn(&b.addRunArtifact(c_example).step);
 
     // The C API test suite
