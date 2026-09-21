@@ -76,8 +76,29 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(c_example);
 
-    const c_example_step = b.step("example", "Run the C example (takes ~10s)");
+    const c_example_step = b.step("example", "Run the C example");
     c_example_step.dependOn(&b.addRunArtifact(c_example).step);
+
+    // The C API test suite
+    const c_tests_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    c_tests_mod.addCSourceFile(.{
+        .file = b.path("tests/test_c_api.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+    });
+    c_tests_mod.addIncludePath(b.path("include"));
+    c_tests_mod.linkLibrary(static_lib);
+
+    const c_tests = b.addExecutable(.{
+        .name = "narnia-c-tests",
+        .root_module = c_tests_mod,
+    });
+
+    const c_tests_step = b.step("c-test", "Run the C API tests");
+    c_tests_step.dependOn(&b.addRunArtifact(c_tests).step);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
