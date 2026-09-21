@@ -11,9 +11,11 @@
 //!    `.{ callback, user_data }` as the args tuple, which turns the whole
 //!    generic machinery into the one `(fn, void*)` shape C wants.
 //! 3. **`Schedule` is a Zig tagged union** with a nested union and `u5`/`u6`
-//!    fields, none of which are C-ABI representable. `CSchedule` is a flat
-//!    `extern struct` mirror; `toSchedule` converts and does the range
-//!    validation that C's `uint8_t` doesn't give us for free.
+//!    fields, none of which are C-ABI representable. `CSchedule` mirrors it as
+//!    an `extern struct` holding a `kind` tag plus an `extern union` of
+//!    per-variant `extern struct`s; only the member matching `kind` is ever
+//!    read. `toSchedule` converts and does the range validation that C's
+//!    `uint8_t` doesn't give us for free.
 //!
 //! On top of that it adds a destroy-notify facility the Zig API doesn't have:
 //! `Job.destroy_ctx` frees the *args tuple*, not the caller's `user_data`, so
@@ -35,36 +37,100 @@ const Error = enum(c_int) {
     invalid_argument = 3,
 };
 
-/// Matches `NarniaScheduleTag` in `include/narnia.h`.
-const Tag = enum(u8) {
+/// Discriminant of `CSchedule`. Matches `NarniaScheduleKind` in
+/// `include/narnia.h`.
+pub const CScheduleKind = enum(c_int) {
+    /// Run a job every N seconds
     every_n_seconds = 0,
-    every_n_minutes = 1,
-    hourly = 2,
-    daily = 3,
-    weekly = 4,
-    monthly = 5,
-    yearly = 6,
+    /// Run a job every N minutes
+    every_n_minutes,
+    /// Run a job every hour at MM:SS
+    hourly,
+    /// Run a job every day at HH:MM:SS
+    daily,
+    /// Run a job every week on WEEK_DAY at HH:MM:SS
+    weekly,
+    /// Run a job every month on DAY at HH:MM:SS
+    monthly, // day 1-31
+    /// Run a job every year on MONTH/DAY at HH:MM:SS
+    yearly,
+
+    /// Non-exhaustive on purpose: `kind` arrives from C, which can put any
+    /// `int` there. The `_` keeps that value legal to hold and to switch on,
+    /// so `toSchedule` can reject it instead of hitting illegal behavior.
     _,
 };
 
-/// Flat, C-ABI-representable mirror of `Schedule`. Only the fields relevant to
-/// the active `tag` are read; the constructors below zero the rest. Field
-/// order must stay in lockstep with `NarniaSchedule` in the header.
+/// The per-variant payloads. Only the member matching `CSchedule.kind` is
+/// read; the rest are left uninitialized by the constructors below, exactly as
+/// a C caller would leave them. Must stay in lockstep with `NarniaScheduleData`
+/// in the header.
+pub const CScheduleData = extern union {
+    /// Run a job every N seconds
+    every_n_seconds: CEveryNSecondsSchedule,
+    /// Run a job every N minutes
+    every_n_minutes: CEveryNMinutesSchedule,
+    /// Run a job every hour at MM:SS
+    hourly: CHourlySchedule,
+    /// Run a job every day at HH:MM:SS
+    daily: CDailySchedule,
+    /// Run a job every week on WEEK_DAY at HH:MM:SS
+    weekly: CWeeklySchedule,
+    /// Run a job every month on DAY at HH:MM:SS
+    monthly: CMonthlySchedule, // day 1-31
+    /// Run a job every year on MONTH/DAY at HH:MM:SS
+    yearly: CYearlySchedule,
+};
+
+/// C-ABI-representable mirror of `Schedule`: a discriminant plus the payload
+/// it selects. Build one with the `narnia_*` constructors below rather than by
+/// hand. Field order must stay in lockstep with `NarniaSchedule` in the header.
 pub const CSchedule = extern struct {
-    tag: u8,
-    /// `every_n_seconds` / `every_n_minutes`.
+    kind: CScheduleKind,
+    data: CScheduleData,
+};
+
+pub const CEveryNSecondsSchedule = extern struct {
     n: u64,
-    /// `yearly`: 1-12.
-    month: u8,
-    /// `monthly` / `yearly`: 1-31, ignored when `last_day` is set.
-    day: u8,
-    /// `weekly`: 0 = Sunday .. 6 = Saturday.
-    weekday: u8,
+};
+
+pub const CEveryNMinutesSchedule = extern struct {
+    n: u64,
+};
+
+pub const CHourlySchedule = extern struct {
+    minute: u8,
+    second: u8,
+};
+
+pub const CDailySchedule = extern struct {
     hour: u8,
     minute: u8,
     second: u8,
-    /// `monthly` / `yearly`: fire on the last calendar day of the month.
+};
+
+pub const CWeeklySchedule = extern struct {
+    week_day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+};
+
+pub const CMonthlySchedule = extern struct {
+    day_of_month: u8,
     last_day: bool,
+    hour: u8,
+    minute: u8,
+    second: u8,
+};
+
+pub const CYearlySchedule = extern struct {
+    month: u8,
+    day_of_month: u8,
+    last_day: bool,
+    hour: u8,
+    minute: u8,
+    second: u8,
 };
 
 const JobFn = *const fn (user_data: ?*anyopaque) callconv(.c) void;
@@ -111,61 +177,119 @@ fn trampoline(callback: JobFn, user_data: ?*anyopaque) void {
     callback(user_data);
 }
 
-fn hourMinuteSecond(cs: CSchedule) ?struct { u5, u6, u6 } {
-    if (cs.hour > 23 or cs.minute > 59 or cs.second > 59) return null;
-    return .{ @intCast(cs.hour), @intCast(cs.minute), @intCast(cs.second) };
+/// Range-checks a wall-clock time and narrows it to the widths `Schedule`
+/// uses. Returns `null` if any component is out of range.
+fn hourMinSec(
+    hour: u8,
+    minute: u8,
+    second: u8,
+) ?struct {
+    hour: u5,
+    minute: u6,
+    second: u6,
+} {
+    if (hour > 23 or minute > 59 or second > 59) return null;
+
+    return .{
+        .hour = @as(u5, @intCast(hour)),
+        .minute = @as(u6, @intCast(minute)),
+        .second = @as(u6, @intCast(second)),
+    };
 }
 
-fn dayOfMonth(cs: CSchedule) ?schedule_mod.DayOfMonth {
-    if (cs.last_day) return .last_day;
-    if (cs.day < 1 or cs.day > 31) return null;
-    return .{ .day = @intCast(cs.day) };
-}
-
-/// Validates and converts. Returns `null` for any out-of-range field, which
-/// the caller reports as `NARNIA_ERR_INVALID_SCHEDULE`.
+/// Validates and converts. Returns `null` for an unknown `kind` or any
+/// out-of-range field, which the caller reports as
+/// `NARNIA_ERR_INVALID_SCHEDULE`.
 fn toSchedule(cs: CSchedule) ?Schedule {
-    const hms = hourMinuteSecond(cs) orelse return null;
-    const hour, const minute, const second = hms;
-
-    return switch (@as(Tag, @enumFromInt(cs.tag))) {
+    return switch (cs.kind) {
         .every_n_seconds => blk: {
-            if (cs.n == 0 or cs.n > std.math.maxInt(usize)) break :blk null;
-            break :blk .{ .every_n_seconds = .{ .n = @intCast(cs.n) } };
+            const ens = cs.data.every_n_seconds;
+
+            if (ens.n == 0 or ens.n > std.math.maxInt(usize)) break :blk null;
+
+            break :blk .{ .every_n_seconds = .{ .n = @intCast(ens.n) } };
         },
         .every_n_minutes => blk: {
-            if (cs.n == 0 or cs.n > std.math.maxInt(usize) / std.time.s_per_min) break :blk null;
-            break :blk .{ .every_n_minutes = .{ .n = @intCast(cs.n) } };
+            const enm = cs.data.every_n_minutes;
+
+            if (enm.n == 0 or enm.n > std.math.maxInt(usize) / std.time.s_per_min) break :blk null;
+
+            break :blk .{ .every_n_minutes = .{ .n = @intCast(enm.n) } };
         },
-        .hourly => .{ .hourly = .{ .minutes = minute, .seconds = second } },
-        .daily => .{ .daily = .{ .hour = hour, .minute = minute, .second = second } },
+        .hourly => blk: {
+            const h = cs.data.hourly;
+
+            const m_s = hourMinSec(0, h.minute, h.second) orelse break :blk null;
+
+            break :blk .{
+                .hourly = .{
+                    .minute = m_s.minute,
+                    .second = m_s.second,
+                },
+            };
+        },
+        .daily => blk: {
+            const d = cs.data.daily;
+
+            const h_m_s = hourMinSec(d.hour, d.minute, d.second) orelse break :blk null;
+
+            break :blk .{
+                .daily = .{
+                    .hour = h_m_s.hour,
+                    .minute = h_m_s.minute,
+                    .second = h_m_s.second,
+                },
+            };
+        },
         .weekly => blk: {
-            if (cs.weekday > 6) break :blk null;
+            const w = cs.data.weekly;
+
+            if (w.week_day > 6) break :blk null;
+
+            const h_m_s = hourMinSec(w.hour, w.minute, w.second) orelse break :blk null;
+
             break :blk .{ .weekly = .{
-                .day = @enumFromInt(@as(u3, @intCast(cs.weekday))),
-                .hour = hour,
-                .minute = minute,
-                .second = second,
+                .week_day = @enumFromInt(@as(u3, @intCast(w.week_day))),
+                .hour = h_m_s.hour,
+                .minute = h_m_s.minute,
+                .second = h_m_s.second,
             } };
         },
         .monthly => blk: {
-            const day = dayOfMonth(cs) orelse break :blk null;
+            const m = cs.data.monthly;
+
+            const day: schedule_mod.DayOfMonth = if (m.last_day) .last_day else day_blk: {
+                if (m.day_of_month < 1 or m.day_of_month > 31) break :blk null;
+                break :day_blk .{ .day = @as(u5, @intCast(m.day_of_month)) };
+            };
+
+            const h_m_s = hourMinSec(m.hour, m.minute, m.second) orelse break :blk null;
+
             break :blk .{ .monthly = .{
-                .day = day,
-                .hour = hour,
-                .minute = minute,
-                .second = second,
+                .day_of_month = day,
+                .hour = h_m_s.hour,
+                .minute = h_m_s.minute,
+                .second = h_m_s.second,
             } };
         },
         .yearly => blk: {
-            if (cs.month < 1 or cs.month > 12) break :blk null;
-            const day = dayOfMonth(cs) orelse break :blk null;
+            const y = cs.data.yearly;
+
+            if (y.month < 1 or y.month > 12) break :blk null;
+
+            const day: schedule_mod.DayOfMonth = if (y.last_day) .last_day else day_blk: {
+                if (y.day_of_month < 1 or y.day_of_month > 31) break :blk null;
+                break :day_blk .{ .day = @as(u5, @intCast(y.day_of_month)) };
+            };
+
+            const h_m_s = hourMinSec(y.hour, y.minute, y.second) orelse break :blk null;
+
             break :blk .{ .yearly = .{
-                .month = @enumFromInt(@as(u4, @intCast(cs.month))),
-                .day = day,
-                .hour = hour,
-                .minute = minute,
-                .second = second,
+                .month = @enumFromInt(@as(u4, @intCast(y.month))),
+                .day_of_month = day,
+                .hour = h_m_s.hour,
+                .minute = h_m_s.minute,
+                .second = h_m_s.second,
             } };
         },
         _ => null,
@@ -182,69 +306,102 @@ fn toSchedule(cs: CSchedule) ?Schedule {
 
 export fn narnia_every_n_seconds(n: u64) CSchedule {
     return .{
-        .tag = @intFromEnum(Tag.every_n_seconds),
-        .n = n,
-        .month = 0,
-        .day = 0,
-        .weekday = 0,
-        .hour = 0,
-        .minute = 0,
-        .second = 0,
-        .last_day = false,
+        .kind = .every_n_seconds,
+        .data = .{
+            .every_n_seconds = .{
+                .n = n,
+            },
+        },
     };
 }
 
 export fn narnia_every_n_minutes(n: u64) CSchedule {
-    var cs = narnia_every_n_seconds(n);
-    cs.tag = @intFromEnum(Tag.every_n_minutes);
-    return cs;
+    return .{
+        .kind = .every_n_minutes,
+        .data = .{
+            .every_n_minutes = .{
+                .n = n,
+            },
+        },
+    };
 }
 
 export fn narnia_hourly(minute: u8, second: u8) CSchedule {
-    var cs = narnia_every_n_seconds(0);
-    cs.tag = @intFromEnum(Tag.hourly);
-    cs.minute = minute;
-    cs.second = second;
-    return cs;
+    return .{
+        .kind = .hourly,
+        .data = .{
+            .hourly = .{
+                .minute = minute,
+                .second = second,
+            },
+        },
+    };
 }
 
 export fn narnia_daily(hour: u8, minute: u8, second: u8) CSchedule {
-    var cs = narnia_every_n_seconds(0);
-    cs.tag = @intFromEnum(Tag.daily);
-    cs.hour = hour;
-    cs.minute = minute;
-    cs.second = second;
-    return cs;
+    return .{
+        .kind = .daily,
+        .data = .{
+            .daily = .{
+                .hour = hour,
+                .minute = minute,
+                .second = second,
+            },
+        },
+    };
 }
 
-export fn narnia_weekly(weekday: u8, hour: u8, minute: u8, second: u8) CSchedule {
-    var cs = narnia_daily(hour, minute, second);
-    cs.tag = @intFromEnum(Tag.weekly);
-    cs.weekday = weekday;
-    return cs;
+export fn narnia_weekly(week_day: u8, hour: u8, minute: u8, second: u8) CSchedule {
+    return .{
+        .kind = .weekly,
+        .data = .{
+            .weekly = .{
+                .week_day = week_day,
+                .hour = hour,
+                .minute = minute,
+                .second = second,
+            },
+        },
+    };
 }
+
+/// Matches `NARNIA_LAST_DAY` in the header.
+const last_day_sentinel: u8 = 0xFF;
 
 /// `day` is 1-31; a month too short for it is skipped entirely, not clamped.
 /// Pass `day = NARNIA_LAST_DAY` to fire on the last calendar day instead.
 export fn narnia_monthly(day: u8, hour: u8, minute: u8, second: u8) CSchedule {
-    var cs = narnia_daily(hour, minute, second);
-    cs.tag = @intFromEnum(Tag.monthly);
-    cs.day = day;
-    cs.last_day = day == last_day_sentinel;
-    return cs;
+    return .{
+        .kind = .monthly,
+        .data = .{
+            .monthly = .{
+                .day_of_month = day,
+                .last_day = (day == last_day_sentinel),
+                .hour = hour,
+                .minute = minute,
+                .second = second,
+            },
+        },
+    };
 }
 
 /// `month` is 1-12, `day` is 1-31 or `NARNIA_LAST_DAY`. A year where `day`
 /// doesn't fall inside `month` (Feb 29 on a common year) is skipped.
 export fn narnia_yearly(month: u8, day: u8, hour: u8, minute: u8, second: u8) CSchedule {
-    var cs = narnia_monthly(day, hour, minute, second);
-    cs.tag = @intFromEnum(Tag.yearly);
-    cs.month = month;
-    return cs;
+    return .{
+        .kind = .yearly,
+        .data = .{
+            .yearly = .{
+                .month = month,
+                .day_of_month = day,
+                .last_day = (day == last_day_sentinel),
+                .hour = hour,
+                .minute = minute,
+                .second = second,
+            },
+        },
+    };
 }
-
-/// Matches `NARNIA_LAST_DAY` in the header.
-const last_day_sentinel: u8 = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Scheduler lifecycle
@@ -426,28 +583,27 @@ test "toSchedule rejects out-of-range fields C can express but Zig cannot" {
     try testing.expect(toSchedule(narnia_monthly(32, 0, 0, 0)) == null);
     try testing.expect(toSchedule(narnia_yearly(0, 1, 0, 0, 0)) == null);
     try testing.expect(toSchedule(narnia_yearly(13, 1, 0, 0, 0)) == null);
-    // `n == 0` would trip the `assert(self.n > 0)` inside `nextFireTime`.
     try testing.expect(toSchedule(narnia_every_n_seconds(0)) == null);
     try testing.expect(toSchedule(narnia_every_n_minutes(0)) == null);
-    // Unknown tag.
+    // Unknown scheduler kind
     var bogus = narnia_daily(0, 0, 0);
-    bogus.tag = 99;
+    bogus.kind = @enumFromInt(99);
     try testing.expect(toSchedule(bogus) == null);
 }
 
 test "toSchedule maps fields onto the right variant" {
     const weekly = toSchedule(narnia_weekly(3, 17, 45, 30)).?;
-    try testing.expectEqual(schedule_mod.WeekDay.WEDNESDAY, weekly.weekly.day);
+    try testing.expectEqual(schedule_mod.WeekDay.WEDNESDAY, weekly.weekly.week_day);
     try testing.expectEqual(@as(u5, 17), weekly.weekly.hour);
     try testing.expectEqual(@as(u6, 45), weekly.weekly.minute);
     try testing.expectEqual(@as(u6, 30), weekly.weekly.second);
 
     const monthly = toSchedule(narnia_monthly(last_day_sentinel, 1, 2, 3)).?;
-    try testing.expectEqual(schedule_mod.DayOfMonth.last_day, monthly.monthly.day);
+    try testing.expectEqual(schedule_mod.DayOfMonth.last_day, monthly.monthly.day_of_month);
 
     const yearly = toSchedule(narnia_yearly(12, 25, 0, 0, 0)).?;
     try testing.expectEqual(std.time.epoch.Month.dec, yearly.yearly.month);
-    try testing.expectEqual(@as(u5, 25), yearly.yearly.day.day);
+    try testing.expectEqual(@as(u5, 25), yearly.yearly.day_of_month.day);
 }
 
 test "a job added through the C API fires and its destroy-notify runs" {

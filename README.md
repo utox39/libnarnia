@@ -322,12 +322,14 @@ zig test src/schedule.zig
 zig test src/schedule.zig --test-filter "monthly"   # a subset, by name
 ```
 
-`src/c_api.zig` cannot be run with `zig test src/c_api.zig` because it imports the `libnarnia` module,
-which only the build graph supplies.
+`src/c_api.zig` cannot be run with `zig test src/c_api.zig` because it imports
+the `libnarnia` module, which only the build graph supplies.
 
-> [!NOTE]
-> The C ABI tests currently cover schedule conversion and the `add` path.
-> Broader coverage of the C API is coming.
+### C API
+
+```sh
+zig build c-test
+```
 
 ## Roadtrip
 

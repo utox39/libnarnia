@@ -127,8 +127,9 @@ pub const EveryNSecondsSchedule = struct {
 
     /// Returns the next multiple of `n` seconds (aligned to the unix epoch)
     /// strictly after `from`.
+    /// Panics when `n == 0`.
     pub fn nextFireTime(self: EveryNSecondsSchedule, from: i64) i64 {
-        std.debug.assert(self.n > 0);
+        if (self.n == 0) unreachable;
 
         const interval: i64 = @intCast(self.n);
         return from + interval - @mod(from, interval);
@@ -141,8 +142,9 @@ pub const EveryNMinutesSchedule = struct {
 
     /// Returns the next multiple of `n` minutes (aligned to the unix epoch)
     /// strictly after `from`.
+    /// Panics when `n == 0`.
     pub fn nextFireTime(self: EveryNMinutesSchedule, from: i64) i64 {
-        std.debug.assert(self.n > 0);
+        if (self.n == 0) unreachable;
 
         const interval: i64 = @as(i64, @intCast(self.n)) * std.time.s_per_min;
         return from + interval - @mod(from, interval);
@@ -151,8 +153,8 @@ pub const EveryNMinutesSchedule = struct {
 
 /// Every hour at MM:SS
 pub const HourlySchedule = struct {
-    minutes: u6, // 2^6 = 64 (0-63). Minutes 0-59
-    seconds: u6 = 0, // 2^6 = 64 (0-63). Seconds 0-59
+    minute: u6, // 2^6 = 64 (0-63). Minutes 0-59
+    second: u6 = 0, // 2^6 = 64 (0-63). Seconds 0-59
 
     /// Returns the next hour boundary (minute:second within the hour)
     /// strictly after `from`.
@@ -164,8 +166,8 @@ pub const HourlySchedule = struct {
             fields.month,
             fields.day,
             fields.hour,
-            self.minutes,
-            self.seconds,
+            self.minute,
+            self.second,
         );
 
         if (candidate <= from) {
@@ -204,8 +206,9 @@ pub const DailySchedule = struct {
 };
 
 /// Every week on WEEK_DAY at HH:MM:SS
+// TODO: rename `day` to `week_day`
 pub const WeeklySchedule = struct {
-    day: WeekDay,
+    week_day: WeekDay,
     hour: u5, // 2^5 = 32 (0-31). Hours: 0-23
     minute: u6, // 2^6 = 64 (0-63). Minutes 0-59
     second: u6 = 0, // 2^6 = 64 (0-63). Seconds 0-59
@@ -216,7 +219,7 @@ pub const WeeklySchedule = struct {
         const fields = CalendarFields.fromEpochSeconds(from);
 
         const current_weekday = @intFromEnum(fields.weekday);
-        const target_weekday = @intFromEnum(self.day);
+        const target_weekday = @intFromEnum(self.week_day);
         const days_until = @mod(@as(i64, target_weekday) - @as(i64, current_weekday), 7);
 
         const epoch_day = (epoch.EpochSeconds{ .secs = @intCast(from) }).getEpochDay().day;
@@ -261,7 +264,7 @@ pub const DayOfMonth = union(enum) {
 
 /// Every month on DAY at HH:MM:SS
 pub const MonthlySchedule = struct {
-    day: DayOfMonth,
+    day_of_month: DayOfMonth,
     hour: u5 = 0, // 2^5 = 32 (0-31). Hours: 0-23
     minute: u6, // 2^6 = 64 (0-63). Minutes 0-59
     second: u6 = 0, // 2^6 = 64 (0-63). Seconds 0-59
@@ -273,7 +276,7 @@ pub const MonthlySchedule = struct {
         var month = fields.month;
 
         while (true) {
-            if (self.day.resolve(year, month)) |day| {
+            if (self.day_of_month.resolve(year, month)) |day| {
                 const candidate = CalendarFields.toEpochSeconds(year, month, day, self.hour, self.minute, self.second);
                 if (candidate > from) return candidate;
             }
@@ -291,7 +294,7 @@ pub const MonthlySchedule = struct {
 /// Every year on MONTH/DAY at HH:MM:SS
 pub const YearlySchedule = struct {
     month: epoch.Month,
-    day: DayOfMonth,
+    day_of_month: DayOfMonth,
     hour: u5 = 0, // 2^5 = 32 (0-31). Hours: 0-23
     minute: u6, // 2^6 = 64 (0-63). Minutes 0-59
     second: u6 = 0, // 2^6 = 64 (0-63). Seconds 0-59
@@ -306,7 +309,7 @@ pub const YearlySchedule = struct {
         var year = fields.year;
 
         while (true) {
-            if (self.day.resolve(year, self.month)) |day| {
+            if (self.day_of_month.resolve(year, self.month)) |day| {
                 const candidate = CalendarFields.toEpochSeconds(year, self.month, day, self.hour, self.minute, self.second);
                 if (candidate > from) return candidate;
             }
@@ -344,13 +347,13 @@ test "every_n_minutes aligns to epoch boundaries" {
 }
 
 test "hourly fires later this hour" {
-    const sch = HourlySchedule{ .minutes = 30 };
+    const sch = HourlySchedule{ .minute = 30 };
     const from = ts(2026, 9, 12, 10, 0, 0);
     try testing.expectEqual(ts(2026, 9, 12, 10, 30, 0), sch.nextFireTime(from));
 }
 
 test "hourly wraps to next hour" {
-    const sch = HourlySchedule{ .minutes = 30 };
+    const sch = HourlySchedule{ .minute = 30 };
     const from = ts(2026, 9, 12, 23, 45, 0);
     try testing.expectEqual(ts(2026, 9, 13, 0, 30, 0), sch.nextFireTime(from));
 }
@@ -374,25 +377,25 @@ test "daily crosses year boundary" {
 }
 
 test "weekly fires later same week" {
-    const sch = WeeklySchedule{ .day = .FRIDAY, .hour = 9, .minute = 0, .second = 0 };
+    const sch = WeeklySchedule{ .week_day = .FRIDAY, .hour = 9, .minute = 0, .second = 0 };
     const from = ts(2026, 9, 7, 8, 0, 0); // Monday 2026-09-07
     try testing.expectEqual(ts(2026, 9, 11, 9, 0, 0), sch.nextFireTime(from)); // Friday
 }
 
 test "weekly at exact fire instant rolls to next week" {
-    const sch = WeeklySchedule{ .day = .FRIDAY, .hour = 9, .minute = 0, .second = 0 };
+    const sch = WeeklySchedule{ .week_day = .FRIDAY, .hour = 9, .minute = 0, .second = 0 };
     const from = ts(2026, 9, 11, 9, 0, 0); // Friday, exact fire instant
     try testing.expectEqual(ts(2026, 9, 18, 9, 0, 0), sch.nextFireTime(from));
 }
 
 test "monthly fires later same month" {
-    const sch = MonthlySchedule{ .day = .{ .day = 20 }, .hour = 12, .minute = 0, .second = 0 };
+    const sch = MonthlySchedule{ .day_of_month = .{ .day = 20 }, .hour = 12, .minute = 0, .second = 0 };
     const from = ts(2026, 9, 1, 0, 0, 0);
     try testing.expectEqual(ts(2026, 9, 20, 12, 0, 0), sch.nextFireTime(from));
 }
 
 test "monthly at exact fire instant rolls to next month" {
-    const sch = MonthlySchedule{ .day = .{ .day = 20 }, .hour = 12, .minute = 0, .second = 0 };
+    const sch = MonthlySchedule{ .day_of_month = .{ .day = 20 }, .hour = 12, .minute = 0, .second = 0 };
     const from = ts(2026, 9, 20, 12, 0, 0);
     try testing.expectEqual(ts(2026, 10, 20, 12, 0, 0), sch.nextFireTime(from));
 }
@@ -400,20 +403,20 @@ test "monthly at exact fire instant rolls to next month" {
 test "monthly skips months without the target day" {
     // day 31 doesn't exist in April, so March 31 rolls forward to May 31,
     // skipping April entirely (not clamped to April 30).
-    const sch = MonthlySchedule{ .day = .{ .day = 31 }, .hour = 0, .minute = 0, .second = 0 };
+    const sch = MonthlySchedule{ .day_of_month = .{ .day = 31 }, .hour = 0, .minute = 0, .second = 0 };
     const from = ts(2026, 3, 31, 0, 0, 0); // exact fire instant, March 31
     try testing.expectEqual(ts(2026, 5, 31, 0, 0, 0), sch.nextFireTime(from));
 }
 
 test "monthly skips a year boundary while searching for the target day" {
     // day 31: Dec has it, Jan has it, so Dec 31 -> Jan 31 next year.
-    const sch = MonthlySchedule{ .day = .{ .day = 31 }, .hour = 0, .minute = 0, .second = 0 };
+    const sch = MonthlySchedule{ .day_of_month = .{ .day = 31 }, .hour = 0, .minute = 0, .second = 0 };
     const from = ts(2026, 12, 31, 0, 0, 0);
     try testing.expectEqual(ts(2027, 1, 31, 0, 0, 0), sch.nextFireTime(from));
 }
 
 test "monthly last_day tracks each month's actual length" {
-    const sch = MonthlySchedule{ .day = .last_day, .hour = 0, .minute = 0, .second = 0 };
+    const sch = MonthlySchedule{ .day_of_month = .last_day, .hour = 0, .minute = 0, .second = 0 };
 
     // February 2026 (not a leap year) -> last day is the 28th.
     try testing.expectEqual(
@@ -433,19 +436,19 @@ test "monthly last_day tracks each month's actual length" {
 }
 
 test "yearly fires later same year" {
-    const sch = YearlySchedule{ .month = .jun, .day = .{ .day = 15 }, .hour = 0, .minute = 0, .second = 0 };
+    const sch = YearlySchedule{ .month = .jun, .day_of_month = .{ .day = 15 }, .hour = 0, .minute = 0, .second = 0 };
     const from = ts(2026, 1, 1, 0, 0, 0);
     try testing.expectEqual(ts(2026, 6, 15, 0, 0, 0), sch.nextFireTime(from));
 }
 
 test "yearly at exact fire instant rolls to next year" {
-    const sch = YearlySchedule{ .month = .jun, .day = .{ .day = 15 }, .hour = 0, .minute = 0, .second = 0 };
+    const sch = YearlySchedule{ .month = .jun, .day_of_month = .{ .day = 15 }, .hour = 0, .minute = 0, .second = 0 };
     const from = ts(2026, 6, 15, 0, 0, 0);
     try testing.expectEqual(ts(2027, 6, 15, 0, 0, 0), sch.nextFireTime(from));
 }
 
 test "yearly on Feb 29 only fires on leap years" {
-    const sch = YearlySchedule{ .month = .feb, .day = .{ .day = 29 }, .hour = 0, .minute = 0, .second = 0 };
+    const sch = YearlySchedule{ .month = .feb, .day_of_month = .{ .day = 29 }, .hour = 0, .minute = 0, .second = 0 };
     // 2026 is not a leap year; next Feb 29 is 2028.
     const from = ts(2026, 1, 1, 0, 0, 0);
     try testing.expectEqual(ts(2028, 2, 29, 0, 0, 0), sch.nextFireTime(from));
@@ -457,7 +460,7 @@ test "Schedule dispatcher forwards to the active variant" {
 }
 
 test "yearly last_day on Feb tracks leap years" {
-    const sch = YearlySchedule{ .month = .feb, .day = .last_day, .hour = 0, .minute = 0, .second = 0 };
+    const sch = YearlySchedule{ .month = .feb, .day_of_month = .last_day, .hour = 0, .minute = 0, .second = 0 };
     try testing.expectEqual(
         ts(2026, 2, 28, 0, 0, 0),
         sch.nextFireTime(ts(2026, 1, 1, 0, 0, 0)),

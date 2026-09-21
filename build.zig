@@ -76,8 +76,29 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(c_example);
 
-    const c_example_step = b.step("example", "Run the C example (takes ~10s)");
+    const c_example_step = b.step("c-example", "Run the C example");
     c_example_step.dependOn(&b.addRunArtifact(c_example).step);
+
+    // The C API test suite
+    const c_tests_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    c_tests_mod.addCSourceFile(.{
+        .file = b.path("tests/test_c_api.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+    });
+    c_tests_mod.addIncludePath(b.path("include"));
+    c_tests_mod.linkLibrary(static_lib);
+
+    const c_tests = b.addExecutable(.{
+        .name = "narnia-c-tests",
+        .root_module = c_tests_mod,
+    });
+
+    const c_tests_step = b.step("c-test", "Run the C API tests");
+    c_tests_step.dependOn(&b.addRunArtifact(c_tests).step);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
@@ -128,11 +149,11 @@ pub fn build(b: *std.Build) void {
     // The bindings' own tests. `c_api.zig` imports the `libnarnia` module, so
     // it can't be run with a bare `zig test src/c_api.zig` — only the build
     // graph knows how to supply that import (and libc).
-    const c_api_tests = b.addTest(.{
+    const c_api_zig_tests = b.addTest(.{
         .root_module = c_api_mod,
     });
 
-    const run_c_api_tests = b.addRunArtifact(c_api_tests);
+    const run_c_api_zig_tests = b.addRunArtifact(c_api_zig_tests);
 
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
@@ -140,7 +161,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
-    test_step.dependOn(&run_c_api_tests.step);
+    // src/c_api.zig tests
+    test_step.dependOn(&run_c_api_zig_tests.step);
 
     // libnarnia's docs
     const libnarnia_docs_step = b.step("docs", "Generate libnarnia docs");

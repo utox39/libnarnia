@@ -17,18 +17,12 @@
    zig fmt src build.zig
    ```
 
-   If you changed the C bindings in `src/c_api.zig`, keep the hand-written
-   `include/narnia.h` in lockstep with them and check the C example still
-   builds and runs:
+   If you changed the C bindings in `src/c_api.zig`, keep `include/narnia.h`
+   in lockstep with them and run:
 
    ```sh
-   zig build example
+   zig build c-test
    ```
-
-   > [!NOTE]
-   > The C ABI tests currently cover schedule conversion and the `add`
-   > path. Broader coverage of the C API is coming, so `zig build example`
-   > is for now the main end-to-end check of the bindings.
 
 4. Commit and push the changes to the new branch.
 5. Open a pull request.
