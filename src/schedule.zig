@@ -127,6 +127,7 @@ pub const EveryNSecondsSchedule = struct {
 
     /// Returns the next multiple of `n` seconds (aligned to the unix epoch)
     /// strictly after `from`.
+    /// Panics when `n == 0`.
     pub fn nextFireTime(self: EveryNSecondsSchedule, from: i64) i64 {
         if (self.n == 0) unreachable;
 
@@ -141,6 +142,7 @@ pub const EveryNMinutesSchedule = struct {
 
     /// Returns the next multiple of `n` minutes (aligned to the unix epoch)
     /// strictly after `from`.
+    /// Panics when `n == 0`.
     pub fn nextFireTime(self: EveryNMinutesSchedule, from: i64) i64 {
         if (self.n == 0) unreachable;
 
