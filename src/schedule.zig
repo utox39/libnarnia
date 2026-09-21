@@ -128,7 +128,7 @@ pub const EveryNSecondsSchedule = struct {
     /// Returns the next multiple of `n` seconds (aligned to the unix epoch)
     /// strictly after `from`.
     pub fn nextFireTime(self: EveryNSecondsSchedule, from: i64) i64 {
-        if (self.n < 0) unreachable;
+        if (self.n == 0) unreachable;
 
         const interval: i64 = @intCast(self.n);
         return from + interval - @mod(from, interval);
@@ -142,7 +142,7 @@ pub const EveryNMinutesSchedule = struct {
     /// Returns the next multiple of `n` minutes (aligned to the unix epoch)
     /// strictly after `from`.
     pub fn nextFireTime(self: EveryNMinutesSchedule, from: i64) i64 {
-        if (self.n < 0) unreachable;
+        if (self.n == 0) unreachable;
 
         const interval: i64 = @as(i64, @intCast(self.n)) * std.time.s_per_min;
         return from + interval - @mod(from, interval);
