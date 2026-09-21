@@ -71,7 +71,7 @@ typedef enum {
     NARNIA_WEEKLY = 4,
     NARNIA_MONTHLY = 5,
     NARNIA_YEARLY = 6
-} NarniaScheduleTag;
+} NarniaScheduleKind;
 
 /* Weekday values for narnia_weekly. */
 #define NARNIA_SUNDAY    0
@@ -82,27 +82,73 @@ typedef enum {
 #define NARNIA_FRIDAY    5
 #define NARNIA_SATURDAY  6
 
+typedef struct {
+    uint64_t n;
+} NarniaEveryNSecondsSchedule;
+
+typedef struct {
+    uint64_t n;
+} NarniaEveryNMinutesSchedule;
+
+typedef struct {
+    uint8_t minute;
+    uint8_t second;
+} NarniaHourlySchedule;
+
+typedef struct {
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t second;
+} NarniaDailySchedule;
+
+typedef struct {
+    uint8_t week_day;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t second;
+} NarniaWeeklySchedule;
+
+typedef struct {
+    uint8_t day_of_month;
+    bool last_day;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t second;
+} NarniaMonthlySchedule;
+
+typedef struct {
+    uint8_t month;
+    uint8_t day_of_month;
+    bool last_day;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t second;
+} NarniaYearlySchedule;
+
 /*
  * Pass as the `day` of narnia_monthly / narnia_yearly to fire on the last
  * calendar day of the month, whatever it is (28/29/30/31).
  */
 #define NARNIA_LAST_DAY 0xFF
 
+typedef union {
+    NarniaEveryNSecondsSchedule every_n_seconds;
+    NarniaEveryNMinutesSchedule every_n_minutes;
+    NarniaHourlySchedule hourly;
+    NarniaDailySchedule daily;
+    NarniaWeeklySchedule weekly;
+    NarniaMonthlySchedule monthly;
+    NarniaYearlySchedule yearly;
+} NarniaScheduleData;
+
 /*
  * Build these with the constructors below rather than filling the fields by
- * hand; only the fields relevant to `tag` are read. Fields are validated by
- * narnia_scheduler_add, which reports NARNIA_ERR_INVALID_SCHEDULE.
+ * hand. Fields are validated by narnia_scheduler_add, which reports
+ * NARNIA_ERR_INVALID_SCHEDULE.
  */
 typedef struct {
-    uint8_t tag; /* NarniaScheduleTag */
-    uint64_t n;
-    uint8_t month;   /* 1-12 */
-    uint8_t day;     /* 1-31 */
-    uint8_t weekday; /* 0 = Sunday .. 6 = Saturday */
-    uint8_t hour;    /* 0-23 */
-    uint8_t minute;  /* 0-59 */
-    uint8_t second;  /* 0-59 */
-    bool last_day;
+    NarniaScheduleKind kind;
+    NarniaScheduleData data;
 } NarniaSchedule;
 
 /* Every `n` seconds, aligned to the unix epoch. `n` must be >= 1. */
