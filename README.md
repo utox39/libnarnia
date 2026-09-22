@@ -37,9 +37,16 @@ with C bindings.
 
 ### Add libnarnia to your project
 
+This will fetch from the main branch:
+
 ```sh
-# This will fetch from the main branch
 zig fetch --save git+https://github.com/utox39/libnarnia.git
+```
+
+If you want to use Zig master, use the zig-master branch:
+
+```sh
+zig fetch --save git+https://github.com/utox39/libnarnia.git#zig-master
 ```
 
 In `build.zig`:
