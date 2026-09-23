@@ -37,6 +37,28 @@ const Error = enum(c_int) {
     invalid_argument = 3,
 };
 
+/// How the scheduler runs its jobs. Matches `NarniaSchedulerMode` in
+/// `include/narnia.h`, and the values must stay in lockstep with it.
+pub const CSchedulerMode = enum(c_int) {
+    /// One timer task per job. Best for a handful of jobs.
+    concurrent = 0,
+    /// One shared run loop ordered by next-fire-time. Scales to many jobs.
+    min_heap = 1,
+
+    /// Non-exhaustive for the same reason as `CScheduleKind`: the value
+    /// arrives from C, which can put any `int` there. `toSchedulerMode`
+    /// rejects anything unknown rather than hitting illegal behavior.
+    _,
+
+    fn toSchedulerMode(self: CSchedulerMode) ?Scheduler.SchedulerMode {
+        return switch (self) {
+            .concurrent => .concurrent,
+            .min_heap => .min_heap,
+            _ => null,
+        };
+    }
+};
+
 /// Discriminant of `CSchedule`. Matches `NarniaScheduleKind` in
 /// `include/narnia.h`.
 pub const CScheduleKind = enum(c_int) {
@@ -418,7 +440,10 @@ export fn narnia_now(handle: ?*Handle) i64 {
     return std.Io.Timestamp.now(self.scheduler.io, .real).toSeconds();
 }
 
-export fn narnia_scheduler_new() ?*Handle {
+/// Creates a scheduler that runs its jobs the way `mode` says.
+/// Returns `NULL` if `mode` is not a known value, or on allocation failure.
+export fn narnia_scheduler_new(mode: CSchedulerMode) ?*Handle {
+    const scheduler_mode = mode.toSchedulerMode() orelse return null;
     const gpa = std.heap.c_allocator;
 
     const handle = gpa.create(Handle) catch return null;
@@ -430,7 +455,7 @@ export fn narnia_scheduler_new() ?*Handle {
         .scheduler = undefined,
         .finalizers = .init(gpa),
     };
-    handle.scheduler = .init(handle.threaded.io(), gpa, .concurrent);
+    handle.scheduler = .init(handle.threaded.io(), gpa, scheduler_mode);
     return handle;
 }
 
@@ -562,6 +587,50 @@ export fn narnia_strerror(err: Error) [*:0]const u8 {
 
 const testing = std.testing;
 
+test "scheduler mode maps onto the Zig enum, and rejects what C can express" {
+    try testing.expectEqual(Scheduler.SchedulerMode.concurrent, CSchedulerMode.concurrent.toSchedulerMode().?);
+    try testing.expectEqual(Scheduler.SchedulerMode.min_heap, CSchedulerMode.min_heap.toSchedulerMode().?);
+
+    // A C caller can put any `int` in there; an unknown one must be refused
+    // rather than silently defaulting to a mode.
+    try testing.expect(@as(CSchedulerMode, @enumFromInt(99)).toSchedulerMode() == null);
+    try testing.expect(@as(CSchedulerMode, @enumFromInt(-1)).toSchedulerMode() == null);
+    try testing.expect(narnia_scheduler_new(@enumFromInt(99)) == null);
+}
+
+test "a min_heap scheduler created through the C API fires" {
+    const State = struct {
+        var fired: std.atomic.Value(u32) = .init(0);
+
+        fn callback(_: ?*anyopaque) callconv(.c) void {
+            _ = fired.fetchAdd(1, .monotonic);
+        }
+    };
+
+    const handle = narnia_scheduler_new(.min_heap).?;
+    defer narnia_scheduler_destroy(handle);
+
+    try testing.expectEqual(Scheduler.SchedulerMode.min_heap, handle.scheduler.mode);
+
+    var id: u64 = 0;
+    try testing.expectEqual(Error.ok, narnia_scheduler_add(
+        handle,
+        narnia_every_n_seconds(1),
+        "c api heap job",
+        State.callback,
+        null,
+        null,
+        narnia_now(handle),
+        &id,
+    ));
+    try testing.expectEqual(Error.ok, narnia_scheduler_start(handle));
+
+    const io = handle.scheduler.io;
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+
+    try testing.expect(State.fired.load(.monotonic) >= 1);
+}
+
 test "toSchedule accepts every constructor" {
     try testing.expect(toSchedule(narnia_every_n_seconds(15)) != null);
     try testing.expect(toSchedule(narnia_every_n_minutes(5)) != null);
@@ -620,7 +689,7 @@ test "a job added through the C API fires and its destroy-notify runs" {
         }
     };
 
-    const handle = narnia_scheduler_new().?;
+    const handle = narnia_scheduler_new(.concurrent).?;
     defer narnia_scheduler_destroy(handle);
 
     var id: u64 = 0;
@@ -650,7 +719,7 @@ test "a job added through the C API fires and its destroy-notify runs" {
 }
 
 test "add rejects bad arguments without registering anything" {
-    const handle = narnia_scheduler_new().?;
+    const handle = narnia_scheduler_new(.concurrent).?;
     defer narnia_scheduler_destroy(handle);
 
     const noop = struct {

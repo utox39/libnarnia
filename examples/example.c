@@ -79,7 +79,7 @@ static void *stop_after_delay(void *arg) {
 }
 
 int main(void) {
-    NarniaScheduler *scheduler = narnia_scheduler_new();
+    NarniaScheduler *scheduler = narnia_scheduler_new(NARNIA_MODE_CONCURRENT);
     if (scheduler == NULL) {
         fprintf(stderr, "failed to create the scheduler\n");
         return 1;
