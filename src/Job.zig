@@ -44,9 +44,8 @@ pub fn deinit(self: Self, gpa: std.mem.Allocator) void {
     if (self.name) |n| gpa.free(n);
 }
 
-/// Orders jobs by `next_run` so the earliest-firing job sorts first,
-/// making `std.PriorityQueue` a min-heap over fire time.
-pub fn lessThanByNextRun(context: void, a: Self, b: Self) std.math.Order {
-    _ = context;
-    return std.math.order(a.next_run, b.next_run);
+/// Advances `job.next_run` past every elapsed occurrence without firing any of
+/// them, per the scheduler's "missed occurrences are dropped, not replayed" rule.
+pub fn advancePast(self: *Self, now: i64) void {
+    while (self.next_run <= now) self.next_run = self.schedule.nextFireTime(self.next_run);
 }
