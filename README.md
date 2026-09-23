@@ -27,7 +27,7 @@ libnarnia is a job-scheduling library (cron-like recurring jobs) for Zig 0.16.0,
 with C bindings.
 
 > [!NOTE]
-> The cron syntax and the `min_heap` scheduler mode are not implemented yet.
+> The cron syntax is not implemented yet.
 
 ## Requirements
 
@@ -97,8 +97,9 @@ pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
     defer _ = gpa.deinit();
 
-    // `.concurrent` gives every job its own timer task. `.min_heap` is not
-    // implemented yet.
+    // `.concurrent` gives every job its own timer task; `.min_heap` drives them
+    // all from one shared loop, which scales better with many jobs and makes
+    // `peek()` meaningful.
     var scheduler = libnarnia.Scheduler.init(init.io, gpa.allocator(), .concurrent);
     defer scheduler.deinit();
 
@@ -115,8 +116,8 @@ pub fn main(init: std.process.Init) !void {
     );
 
     // Launches every job that isn't already running, then returns immediately.
-    // Nothing fires before this, and a job added later stays dormant until the
-    // next `start()` — it is idempotent, so just call it again.
+    // Nothing fires before this; a job added *after* it is picked up on its
+    // own, so one call is enough.
     try scheduler.start();
 
     try std.Io.sleep(init.io, std.Io.Duration.fromSeconds(16), .real);
@@ -187,8 +188,8 @@ that called `start()`.
   calling back into the scheduler), so neither may race an `add` or `remove`.
 - **A callback must never remove its own job.** `remove` waits for the job's
   callbacks to finish, so the callback would wait on itself and deadlock.
-  Removing a *different* job from inside a callback is fine, as is `add` — but
-  a job added from a callback still stays dormant until the next `start()`.
+  Removing a *different* job from inside a callback is fine, as is `add`: a job
+  added from a callback starts firing on its own, like one added anywhere else.
 - **A callback can overlap with itself.** Each firing is dispatched
   fire-and-forget so a slow callback never delays the next occurrence, so a
   callback outlasting its own interval runs more than once at a time, every
@@ -317,8 +318,8 @@ zig build example
 zig build test --summary all
 ```
 
-The `.concurrent` scheduler tests wait on real wall-clock time rather than
-a mocked one (for now).
+The `concurrent` and the `min_heap` scheduler tests wait on real wall-clock time
+rather than a mocked one (for now).
 
 The two files that import nothing can also be tested on their own, which is
 much faster while iterating on the time math:
