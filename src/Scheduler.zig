@@ -939,6 +939,252 @@ test "removing the peeked job exposes the next earliest job" {
     try testing.expectEqual(later_id, next.id);
 }
 
+test "min_heap: a scheduled job actually fires its callback" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, now);
+
+    try scheduler.start();
+
+    // Real wall-clock wait, as in the `concurrent` equivalent: give the loop at
+    // least one full second-boundary to fire on. `scheduler.deinit()` then
+    // cancels the loop and drains the job's callbacks, so `counter` is safe to
+    // go out of scope right after this returns.
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+
+    try testing.expect(counter.load(.monotonic) >= 1);
+}
+
+test "min_heap: a failing callback is logged but doesn't stop the loop" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, "failing job", failingCallback, .{&counter}, now);
+
+    try scheduler.start();
+
+    // Every firing returns an error; the shared loop must keep going anyway.
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(3), .real);
+
+    try testing.expect(counter.load(.monotonic) >= 2);
+}
+
+test "min_heap: every queued job fires, not just the root" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var fast = std.atomic.Value(u32).init(0);
+    var slow = std.atomic.Value(u32).init(0);
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&fast}, now);
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 2 } }, null, incrementCounter, .{&slow}, now);
+
+    try scheduler.start();
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(5), .real);
+
+    // The 1s job must not starve the 2s one: both share a single loop, and the
+    // faster one is the root far more often.
+    try testing.expect(slow.load(.monotonic) >= 1);
+    try testing.expect(fast.load(.monotonic) > slow.load(.monotonic));
+}
+
+test "min_heap: a job added after start is picked up without another start" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    // Start with a job far enough out that the loop parks on a long deadline:
+    // the late `add` below has to interrupt that sleep, not wait it out.
+    var now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 3600 } }, null, noopCallback, .{}, now);
+
+    try scheduler.start();
+    try std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .real);
+
+    now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, now);
+
+    // No second `start()`: the wakeup event is what makes this mode notice.
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+
+    try testing.expect(counter.load(.monotonic) >= 1);
+}
+
+test "min_heap: an overdue job is dropped, not replayed" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    // A day's worth of backlog on a 1s schedule: 86400 occurrences that must
+    // all be skipped un-fired. Replaying them would fire back-to-back on
+    // zero-length sleeps and starve everything else on the shared loop.
+    const stale = std.Io.Timestamp.now(io, .real).toSeconds() - std.time.s_per_day;
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, stale);
+
+    try scheduler.start();
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(3), .real);
+
+    // Only the occurrences that genuinely came due during the sleep above.
+    try testing.expect(counter.load(.monotonic) >= 1);
+    try testing.expect(counter.load(.monotonic) <= 5);
+}
+
+test "min_heap: a job added overdue to a live loop is dropped, not replayed" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    try scheduler.start(); // empty queue: the loop parks on the wakeup event
+
+    // Same backlog as above, but arriving after the loop is already live, so
+    // it is `add` rather than `start` that has to drop the elapsed occurrences.
+    const stale = std.Io.Timestamp.now(io, .real).toSeconds() - std.time.s_per_day;
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, stale);
+
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(3), .real);
+
+    try testing.expect(counter.load(.monotonic) >= 1);
+    try testing.expect(counter.load(.monotonic) <= 5);
+}
+
+test "min_heap: remove waits for an in-flight callback before freeing its args" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var state = SlowState{ .io = io };
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    const id = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, SlowState.callback, .{&state}, now);
+
+    try scheduler.start();
+
+    // Wait for the callback to be mid-flight, so `remove` below races it.
+    while (!state.started.load(.acquire)) {
+        try std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .real);
+    }
+
+    try testing.expect(scheduler.remove(id));
+
+    // `remove` cancels this job's own callback group, which blocks until the
+    // spinning callback returns. So by the time it returns, the callback is
+    // provably done — it cannot still be reading the args tuple just freed.
+    try testing.expect(state.finished.load(.acquire));
+}
+
+test "min_heap: removed job stops firing" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    const id = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, now);
+
+    try scheduler.start();
+
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+    try testing.expect(scheduler.remove(id));
+
+    const count_at_removal = counter.load(.monotonic);
+    try testing.expect(count_at_removal >= 1);
+
+    // The job is out of the heap and its callbacks have drained, so no further
+    // firing is possible even after waiting.
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+    try testing.expectEqual(count_at_removal, counter.load(.monotonic));
+}
+
+test "min_heap: stop halts firing but keeps jobs, and start relaunches them" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, now);
+
+    try scheduler.start();
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+
+    scheduler.stop();
+    const count_at_stop = counter.load(.monotonic);
+    try testing.expect(count_at_stop >= 1);
+
+    // `stop` blocks until the loop has actually stopped, so nothing may fire
+    // afterwards — but the job itself stays registered.
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+    try testing.expectEqual(count_at_stop, counter.load(.monotonic));
+    try testing.expectEqual(@as(usize, 1), scheduler.count());
+
+    // `stop` cleared `loop_future`, so `start` relaunches rather than treating
+    // the loop as already running. The two seconds missed above are dropped,
+    // not replayed.
+    try scheduler.start();
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+    const after_relaunch = counter.load(.monotonic);
+    try testing.expect(after_relaunch > count_at_stop);
+    try testing.expect(after_relaunch - count_at_stop <= 5);
+}
+
+test "min_heap: stop before wait does not block" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .min_heap);
+    defer scheduler.deinit();
+
+    scheduler.stop();
+    scheduler.wait();
+}
+
 test "concurrent: add stores jobs and count reflects them" {
     var threaded = testIo();
     defer threaded.deinit();
@@ -1098,6 +1344,57 @@ test "concurrent: stop halts firing but keeps jobs, and start relaunches them" {
     try scheduler.start();
     try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
     try testing.expect(counter.load(.monotonic) > count_at_stop);
+}
+
+test "concurrent: a job added after start is picked up without another start" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .concurrent);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    // Start with an empty queue, so the launcher has nothing to do until the
+    // `add` below signals it.
+    try scheduler.start();
+    try std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .real);
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, now);
+
+    // No second `start()`: `runConcurrentJobs` is what launches this.
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+
+    try testing.expect(counter.load(.monotonic) >= 1);
+}
+
+test "concurrent: a job added while running is launched exactly once" {
+    var threaded = testIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var scheduler = Self.init(io, testing.allocator, .concurrent);
+    defer scheduler.deinit();
+
+    var counter = std.atomic.Value(u32).init(0);
+
+    try scheduler.start();
+
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, null, incrementCounter, .{&counter}, now);
+
+    // A redundant `start()` must not launch a second timer task for a job the
+    // launcher has already picked up — that would double every firing.
+    try std.Io.sleep(io, std.Io.Duration.fromMilliseconds(200), .real);
+    try scheduler.start();
+
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(3), .real);
+
+    // ~3 firings for one task; a double launch would show up as ~6.
+    try testing.expect(counter.load(.monotonic) >= 2);
+    try testing.expect(counter.load(.monotonic) <= 4);
 }
 
 test "concurrent: removed job stops firing" {
