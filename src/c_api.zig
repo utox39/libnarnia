@@ -587,6 +587,50 @@ export fn narnia_strerror(err: Error) [*:0]const u8 {
 
 const testing = std.testing;
 
+test "scheduler mode maps onto the Zig enum, and rejects what C can express" {
+    try testing.expectEqual(Scheduler.SchedulerMode.concurrent, CSchedulerMode.concurrent.toSchedulerMode().?);
+    try testing.expectEqual(Scheduler.SchedulerMode.min_heap, CSchedulerMode.min_heap.toSchedulerMode().?);
+
+    // A C caller can put any `int` in there; an unknown one must be refused
+    // rather than silently defaulting to a mode.
+    try testing.expect(@as(CSchedulerMode, @enumFromInt(99)).toSchedulerMode() == null);
+    try testing.expect(@as(CSchedulerMode, @enumFromInt(-1)).toSchedulerMode() == null);
+    try testing.expect(narnia_scheduler_new(@enumFromInt(99)) == null);
+}
+
+test "a min_heap scheduler created through the C API fires" {
+    const State = struct {
+        var fired: std.atomic.Value(u32) = .init(0);
+
+        fn callback(_: ?*anyopaque) callconv(.c) void {
+            _ = fired.fetchAdd(1, .monotonic);
+        }
+    };
+
+    const handle = narnia_scheduler_new(.min_heap).?;
+    defer narnia_scheduler_destroy(handle);
+
+    try testing.expectEqual(Scheduler.SchedulerMode.min_heap, handle.scheduler.mode);
+
+    var id: u64 = 0;
+    try testing.expectEqual(Error.ok, narnia_scheduler_add(
+        handle,
+        narnia_every_n_seconds(1),
+        "c api heap job",
+        State.callback,
+        null,
+        null,
+        narnia_now(handle),
+        &id,
+    ));
+    try testing.expectEqual(Error.ok, narnia_scheduler_start(handle));
+
+    const io = handle.scheduler.io;
+    try std.Io.sleep(io, std.Io.Duration.fromSeconds(2), .real);
+
+    try testing.expect(State.fired.load(.monotonic) >= 1);
+}
+
 test "toSchedule accepts every constructor" {
     try testing.expect(toSchedule(narnia_every_n_seconds(15)) != null);
     try testing.expect(toSchedule(narnia_every_n_minutes(5)) != null);
