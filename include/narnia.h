@@ -3,7 +3,7 @@
  *
  * Typical use:
  *
- *     NarniaScheduler *s = narnia_scheduler_new();
+ *     NarniaScheduler *s = narnia_scheduler_new(NARNIA_MODE_CONCURRENT);
  *     uint64_t id;
  *     narnia_scheduler_add(s, narnia_every_n_seconds(5), "tick",
  *                          on_tick, NULL, NULL, narnia_now(s), &id);
@@ -250,8 +250,8 @@ void narnia_scheduler_destroy(NarniaScheduler *scheduler);
  * time is always strictly after it. Pass narnia_now() unless you are
  * deliberately scheduling relative to some other instant.
  *
- * Nothing fires until narnia_scheduler_start. A job added after a previous
- * start stays dormant until the next one.
+ * Nothing fires until narnia_scheduler_start. A job added after that call is
+ * picked up on its own and needs no second start.
  */
 NarniaError narnia_scheduler_add(NarniaScheduler *scheduler,
                                  NarniaSchedule schedule, const char *name,
@@ -261,8 +261,8 @@ NarniaError narnia_scheduler_add(NarniaScheduler *scheduler,
 
 /*
  * Launches every registered job that isn't already running, then returns
- * immediately. Idempotent: already-running jobs are skipped, never restarted,
- * so call it again after adding jobs to pick them up.
+ * immediately. Idempotent: already-running jobs are skipped, never restarted.
+ * Jobs added after this call are launched on their own, so one call is enough.
  */
 NarniaError narnia_scheduler_start(NarniaScheduler *scheduler);
 
