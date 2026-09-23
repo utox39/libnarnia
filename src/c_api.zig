@@ -689,7 +689,7 @@ test "a job added through the C API fires and its destroy-notify runs" {
         }
     };
 
-    const handle = narnia_scheduler_new().?;
+    const handle = narnia_scheduler_new(.concurrent).?;
     defer narnia_scheduler_destroy(handle);
 
     var id: u64 = 0;
@@ -719,7 +719,7 @@ test "a job added through the C API fires and its destroy-notify runs" {
 }
 
 test "add rejects bad arguments without registering anything" {
-    const handle = narnia_scheduler_new().?;
+    const handle = narnia_scheduler_new(.concurrent).?;
     defer narnia_scheduler_destroy(handle);
 
     const noop = struct {
