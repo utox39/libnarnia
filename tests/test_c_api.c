@@ -85,8 +85,18 @@ static void on_destroy(void *user_data) {
 }
 
 /* A scheduler or a bail-out: there is no sane way to continue without one. */
-static NarniaScheduler *must_new(void) {
-    NarniaScheduler *scheduler = narnia_scheduler_new();
+static NarniaScheduler *must_new_concurrent(void) {
+    NarniaScheduler *scheduler = narnia_scheduler_new(NARNIA_MODE_CONCURRENT);
+    if (scheduler == NULL) {
+        fprintf(stderr, "%s: narnia_scheduler_new returned NULL\n",
+                g_current_test);
+        exit(1);
+    }
+    return scheduler;
+}
+
+static NarniaScheduler *must_new_min_heap(void) {
+    NarniaScheduler *scheduler = narnia_scheduler_new(NARNIA_MODE_MIN_HEAP);
     if (scheduler == NULL) {
         fprintf(stderr, "%s: narnia_scheduler_new returned NULL\n",
                 g_current_test);
@@ -172,7 +182,7 @@ static void test_strerror_describes_every_code(void) {
 /* ------------------------------------------------------------------ */
 
 static void test_add_assigns_increasing_ids(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
 
     uint64_t first = 0, second = 0;
     CHECK_ERR(NARNIA_OK,
@@ -194,7 +204,7 @@ static void test_add_assigns_increasing_ids(void) {
 }
 
 static void test_add_rejects_invalid_arguments(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
 
     uint64_t id = 0;
     CHECK_ERR(NARNIA_ERR_INVALID_ARGUMENT,
@@ -213,7 +223,7 @@ static void test_add_rejects_invalid_arguments(void) {
  * tripping an assert deeper in.
  */
 static void test_add_rejects_out_of_range_schedules(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
 
     const NarniaSchedule invalid[] = {
         narnia_every_n_seconds(0),     narnia_every_n_minutes(0),
@@ -259,7 +269,7 @@ static void test_null_handle_is_handled_everywhere(void) {
 }
 
 static void test_now_returns_a_plausible_timestamp(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
 
     int64_t now = narnia_now(scheduler);
     // 2020-01-01 < now < 2100-01-01: catches a wrong unit far more than a skew.
@@ -276,7 +286,7 @@ static void test_now_returns_a_plausible_timestamp(void) {
 /* ------------------------------------------------------------------ */
 
 static void test_job_fires_after_start(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
     Counter counter = {0, false};
 
     uint64_t id = 0;
@@ -303,7 +313,7 @@ static void test_job_fires_after_start(void) {
  * it then runs can never race a callback still reading the same user_data.
  */
 static void test_remove_stops_the_job_and_runs_destroy(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
     Counter counter = {0, false};
 
     uint64_t id = 0;
@@ -333,7 +343,7 @@ static void test_remove_stops_the_job_and_runs_destroy(void) {
 
 /* A job that outlives every remove() still gets its disposer run on destroy. */
 static void test_destroy_runs_pending_destroy_notifies(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
     Counter counter = {0, false};
 
     CHECK_ERR(NARNIA_OK, narnia_scheduler_add(
@@ -345,12 +355,11 @@ static void test_destroy_runs_pending_destroy_notifies(void) {
 }
 
 /*
- * start() reconciles rather than running once: a job registered after a start
- * stays dormant until the next one, and the already-running job is not
- * restarted in the process.
+ * A job registered after a start() is launched on its own, and a redundant
+ * start() does not restart anything already running.
  */
 static void test_start_is_idempotent_and_picks_up_late_jobs(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
     Counter early = {0, false};
     Counter late = {0, false};
 
@@ -367,23 +376,26 @@ static void test_start_is_idempotent_and_picks_up_late_jobs(void) {
                                    on_fire, &late, NULL, narnia_now(scheduler),
                                    NULL));
     sleep(2);
-    CHECK(late.fired == 0); /* dormant until the next start() */
+    CHECK(late.fired >= 1); /* picked up without a second start() */
 
     unsigned early_before_restart = early.fired;
-    CHECK_ERR(NARNIA_OK, narnia_scheduler_start(scheduler));
-    sleep(2);
-    CHECK(late.fired >= 1);
-    /* The early job kept its own loop across the second start(), never
-     * restarted.
+    unsigned late_before_restart = late.fired;
+
+    /* A redundant start() must not launch a second timer task for either job:
+     * that would double every firing from here on.
      */
+    CHECK_ERR(NARNIA_OK, narnia_scheduler_start(scheduler));
+    sleep(3);
     CHECK(early.fired > early_before_restart);
+    CHECK(early.fired - early_before_restart <= 4);
+    CHECK(late.fired - late_before_restart <= 4);
 
     narnia_scheduler_destroy(scheduler);
 }
 
 /* stop() unschedules nothing: the jobs stay registered and relaunchable. */
 static void test_stop_halts_firing_and_start_relaunches(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
     Counter counter = {0, false};
 
     CHECK_ERR(NARNIA_OK,
@@ -421,7 +433,7 @@ static void *stop_after_a_second(void *arg) {
 
 /* A stop that already happened must not leave wait() parked forever. */
 static void test_wait_returns_immediately_after_a_stop(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
 
     narnia_scheduler_stop(scheduler);
     narnia_scheduler_wait(scheduler); /* hangs the suite if this regresses */
@@ -432,7 +444,7 @@ static void test_wait_returns_immediately_after_a_stop(void) {
 /* The shutdown handshake a real C program uses: park here, stop from a thread.
  */
 static void test_wait_is_woken_by_a_stop_from_another_thread(void) {
-    NarniaScheduler *scheduler = must_new();
+    NarniaScheduler *scheduler = must_new_concurrent();
     Counter counter = {0, false};
 
     CHECK_ERR(NARNIA_OK,
@@ -459,6 +471,61 @@ static void test_wait_is_woken_by_a_stop_from_another_thread(void) {
     narnia_scheduler_destroy(scheduler);
 }
 
+/* An unknown mode must be refused rather than silently defaulted. */
+static void test_new_rejects_an_unknown_mode(void) {
+    CHECK(narnia_scheduler_new((NarniaSchedulerMode)99) == NULL);
+    CHECK(narnia_scheduler_new((NarniaSchedulerMode)-1) == NULL);
+}
+
+/* The min_heap mode has to be a drop-in for concurrent across the C surface. */
+static void test_min_heap_mode_fires_and_removes(void) {
+    NarniaScheduler *scheduler = must_new_min_heap();
+    Counter counter = {0, false};
+
+    uint64_t id = 0;
+    CHECK_ERR(NARNIA_OK,
+              narnia_scheduler_add(scheduler, narnia_every_n_seconds(1),
+                                   "heap ticker", on_fire, &counter,
+                                   on_destroy, narnia_now(scheduler), &id));
+
+    /* Nothing may fire before start(), in this mode either. */
+    sleep(2);
+    CHECK(counter.fired == 0);
+
+    CHECK_ERR(NARNIA_OK, narnia_scheduler_start(scheduler));
+    sleep(2);
+    CHECK(counter.fired >= 1);
+
+    /* remove() waits for the job's callbacks, then runs the destroy-notify. */
+    CHECK(narnia_scheduler_remove(scheduler, id));
+    CHECK(counter.destroyed);
+
+    unsigned int after_removal = counter.fired;
+    sleep(2);
+    CHECK(counter.fired == after_removal);
+
+    narnia_scheduler_destroy(scheduler);
+}
+
+/* A job added to a running min_heap scheduler needs no second start(). */
+static void test_min_heap_picks_up_late_jobs(void) {
+    NarniaScheduler *scheduler = must_new_min_heap();
+    Counter counter = {0, false};
+
+    CHECK_ERR(NARNIA_OK, narnia_scheduler_start(scheduler));
+
+    uint64_t id = 0;
+    CHECK_ERR(NARNIA_OK,
+              narnia_scheduler_add(scheduler, narnia_every_n_seconds(1),
+                                   "late heap ticker", on_fire, &counter, NULL,
+                                   narnia_now(scheduler), &id));
+
+    sleep(2);
+    CHECK(counter.fired >= 1);
+
+    narnia_scheduler_destroy(scheduler);
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void) {
@@ -477,6 +544,9 @@ int main(void) {
     RUN(test_stop_halts_firing_and_start_relaunches);
     RUN(test_wait_returns_immediately_after_a_stop);
     RUN(test_wait_is_woken_by_a_stop_from_another_thread);
+    RUN(test_new_rejects_an_unknown_mode);
+    RUN(test_min_heap_mode_fires_and_removes);
+    RUN(test_min_heap_picks_up_late_jobs);
 
     printf("\n- %u/%u C API tests passed.\n", g_total_checks - g_checks_failed,
            g_total_checks);
