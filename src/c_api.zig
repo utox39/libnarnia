@@ -37,6 +37,28 @@ const Error = enum(c_int) {
     invalid_argument = 3,
 };
 
+/// How the scheduler runs its jobs. Matches `NarniaSchedulerMode` in
+/// `include/narnia.h`, and the values must stay in lockstep with it.
+pub const CSchedulerMode = enum(c_int) {
+    /// One timer task per job. Best for a handful of jobs.
+    concurrent = 0,
+    /// One shared run loop ordered by next-fire-time. Scales to many jobs.
+    min_heap = 1,
+
+    /// Non-exhaustive for the same reason as `CScheduleKind`: the value
+    /// arrives from C, which can put any `int` there. `toSchedulerMode`
+    /// rejects anything unknown rather than hitting illegal behavior.
+    _,
+
+    fn toSchedulerMode(self: CSchedulerMode) ?Scheduler.SchedulerMode {
+        return switch (self) {
+            .concurrent => .concurrent,
+            .min_heap => .min_heap,
+            _ => null,
+        };
+    }
+};
+
 /// Discriminant of `CSchedule`. Matches `NarniaScheduleKind` in
 /// `include/narnia.h`.
 pub const CScheduleKind = enum(c_int) {
@@ -418,7 +440,10 @@ export fn narnia_now(handle: ?*Handle) i64 {
     return std.Io.Timestamp.now(self.scheduler.io, .real).toSeconds();
 }
 
-export fn narnia_scheduler_new() ?*Handle {
+/// Creates a scheduler that runs its jobs the way `mode` says.
+/// Returns `NULL` if `mode` is not a known value, or on allocation failure.
+export fn narnia_scheduler_new(mode: CSchedulerMode) ?*Handle {
+    const scheduler_mode = mode.toSchedulerMode() orelse return null;
     const gpa = std.heap.c_allocator;
 
     const handle = gpa.create(Handle) catch return null;
@@ -430,7 +455,7 @@ export fn narnia_scheduler_new() ?*Handle {
         .scheduler = undefined,
         .finalizers = .init(gpa),
     };
-    handle.scheduler = .init(handle.threaded.io(), gpa, .concurrent);
+    handle.scheduler = .init(handle.threaded.io(), gpa, scheduler_mode);
     return handle;
 }
 
