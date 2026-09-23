@@ -206,7 +206,6 @@ pub const DailySchedule = struct {
 };
 
 /// Every week on WEEK_DAY at HH:MM:SS
-// TODO: rename `day` to `week_day`
 pub const WeeklySchedule = struct {
     week_day: WeekDay,
     hour: u5, // 2^5 = 32 (0-31). Hours: 0-23
