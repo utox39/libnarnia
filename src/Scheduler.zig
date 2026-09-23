@@ -789,10 +789,7 @@ fn runJob(io: std.Io, job: Job) void {
     while (true) {
         const now = std.Io.Timestamp.now(io, .real).toSeconds();
 
-        if (next_run <= now) {
-            next_run = job.schedule.nextFireTime(next_run);
-            continue;
-        }
+        while (next_run <= now) next_run = job.schedule.nextFireTime(next_run);
 
         // `next_run` is always strictly greater than `now` thanks to the check above
         const wait_seconds = next_run - now;
