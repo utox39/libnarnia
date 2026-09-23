@@ -194,10 +194,30 @@ typedef void (*NarniaJobFn)(void *user_data);
 typedef void (*NarniaDestroyFn)(void *user_data);
 
 /*
- * Creates a scheduler and its internal thread pool. Returns NULL on
+ * How a scheduler runs its jobs. Both modes fire the same way: callbacks are
+ * dispatched so a slow one never delays the next occurrence, and occurrences
+ * missed while a job was overdue are dropped rather than replayed.
+ */
+typedef enum {
+    /*
+     * One timer task per job, all running independently. Best for a handful
+     * of jobs; it does not scale to many.
+     */
+    NARNIA_MODE_CONCURRENT = 0,
+    /*
+     * One shared run loop, ordered by next-fire-time, driving every job. N
+     * jobs cost a single task rather than N, so this is the mode to reach for
+     * when there are many.
+     */
+    NARNIA_MODE_MIN_HEAP = 1
+} NarniaSchedulerMode;
+
+/*
+ * Creates a scheduler and its internal thread pool, running its jobs the way
+ * `mode` says. Returns NULL if `mode` is not one of the values above, or on
  * allocation failure. Free it with narnia_scheduler_destroy.
  */
-NarniaScheduler *narnia_scheduler_new(void);
+NarniaScheduler *narnia_scheduler_new(NarniaSchedulerMode mode);
 
 /*
  * Current unix timestamp in seconds, UTC — the reference point
