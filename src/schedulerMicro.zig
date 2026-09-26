@@ -381,6 +381,37 @@ test "jobs sharing a deadline all fire on the same pass" {
     try std.testing.expectEqual(1, H.b_fires);
 }
 
+test "an occurrence that comes due while the loop is late still fires" {
+    const H = struct {
+        var slow_fires: usize = 0;
+        var fast_fires: usize = 0;
+
+        /// Callbacks run inline, so a slow one pushes the loop past the
+        /// deadlines of the jobs it has not visited yet.
+        fn fast(ctx: ?*anyopaque) void {
+            const scheduler: *SchedulerMicro(2, false) = @ptrCast(@alignCast(ctx.?));
+            fast_fires += 1;
+            VirtualClock.sleep(2);
+            if (fast_fires == 3) scheduler.stop();
+        }
+
+        fn slow(_: ?*anyopaque) void {
+            slow_fires += 1;
+        }
+    };
+
+    var scheduler: SchedulerMicro(2, false) = .init;
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 5 } }, "slow", H.slow, null, 0);
+    _ = try scheduler.add(.{ .every_n_seconds = .{ .n = 1 } }, "fast", H.fast, &scheduler, 0);
+
+    scheduler.start(VirtualClock.at(0));
+
+    // The 5s job's occurrence is reached only after the 1s job has overrun it,
+    // so it fires late rather than being skipped.
+    try std.testing.expectEqual(3, H.fast_fires);
+    try std.testing.expect(H.slow_fires >= 1);
+}
+
 test "remove frees the slot and reports whether the id existed" {
     var scheduler: SchedulerMicro(2, false) = .init;
     const sch: Schedule = .{ .every_n_seconds = .{ .n = 3 } };
