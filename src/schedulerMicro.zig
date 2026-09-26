@@ -13,9 +13,13 @@ pub const Callback = *const fn (ctx: ?*anyopaque) void;
 /// Asking for these two functions is what keeps the scheduler free of any
 /// dependency on a specific chip.
 pub const Clock = struct {
-    /// Returns the current time, in the same units `add` was given (see `add`).
+    /// Returns the current time **in seconds** — not milliseconds (yet), not
+    /// microseconds. Every `Schedule` counts in seconds, and `sleep` is handed
+    /// the difference between two of these readings, so a finer unit here makes
+    /// the scheduler sleep whole seconds between occurrences that are only
+    /// fractions apart.
     now: *const fn () i64,
-    /// Blocks the caller for at least `seconds`.
+    /// Blocks the caller for at least `seconds`. Never called with a value <= 0.
     sleep: *const fn (seconds: i64) void,
 };
 
@@ -120,36 +124,48 @@ pub fn SchedulerMicro(comptime size: usize, comptime support_rtc: bool) type {
         /// Nothing can be added while this runs except from inside a callback.
         pub fn start(self: *Self, clock: Clock) void {
             // Steps:
-            //   1. drops every occurrence already elapsed
-            //   2. waits for the earliest remaining `next_run`
-            //   3. fires whatever that wait was for.
+            //   1. once, up front: drop every occurrence already elapsed
+            //   2. wait for the earliest `next_run`
+            //   3. fire everything the clock now says is due.
 
             self.running = true;
 
+            // `advancePast` skips occurrences instead of firing them, so it runs
+            // here and never inside the loop: a job is only legitimately stale at
+            // this point (registered with an old `now`, or left overdue by a
+            // `stop`). Per cycle it would also discard the occurrences the loop is
+            // merely late for.
+            const started_at = clock.now();
+            for (&self.slots) |*slot| {
+                if (slot.*) |*task| task.advancePast(started_at);
+            }
+
             while (self.running) {
-                const now = clock.now();
-
-                // Drops every occurrence already elapsed
-                for (&self.slots) |*slot| {
-                    if (slot.*) |*task| task.advancePast(now);
-                }
-
-                // The earliest `next_run` in the queue
+                // The earliest `next_run` in the queue.
                 const deadline = self.peek() orelse return;
 
-                clock.sleep(deadline - now);
+                const now_before_sleep = clock.now();
+                // The deadline is still ahead, so wait for it. A loop already
+                // past it (an overrunning callback, an overshot sleep) skips
+                // the wait.
+                if (deadline > now_before_sleep) clock.sleep(deadline - now_before_sleep);
+
+                const now = clock.now();
 
                 for (&self.slots) |*slot| {
                     if (slot.*) |*task| {
-                        // After `advancePast`, every `next_run` is > `now`, so this
-                        // selects exactly the jobs sharing the earliest deadline.
-                        if (task.next_run > deadline) continue;
+                        if (task.next_run > now) continue;
 
                         // Advance before firing, not after: the callback may remove
                         // this job or add another, and an early return or an error
                         // must not leave the slot sitting on a spent deadline.
+                        //
+                        // Past `now`, not by one occurrence: a job the loop fell
+                        // behind on fires once and drops its backlog. `nextFireTime`
+                        // is exclusive, so `next_run` ends up strictly later and the
+                        // loop keeps making progress.
                         // TODO: try to avoid `unreachable`
-                        task.next_run = nextFireTime(task.schedule, task.next_run) catch unreachable;
+                        task.next_run = nextFireTime(task.schedule, now) catch unreachable;
 
                         const callback = task.callback;
                         const ctx = task.ctx;
