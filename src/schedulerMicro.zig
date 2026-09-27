@@ -2,8 +2,6 @@ const std = @import("std");
 const Job = @import("Job.zig");
 const Schedule = @import("schedule.zig").Schedule;
 
-// TODO: (3) review all the code and tests
-
 /// Returns `void`: a job that can fail has to handle its own failure.
 pub const Callback = *const fn (ctx: ?*anyopaque) void;
 
