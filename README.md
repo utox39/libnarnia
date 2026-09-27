@@ -158,7 +158,7 @@ zig fetch --save git+https://github.com/utox39/libnarnia.git#zig-master
 ```
 
 > [!NOTE]
-> This guide uses the Raspberry Pi Pico. See [MicroZig - Getting Started](https://microzig.tech/docs/getting-started/) for more info
+> This guide uses the Raspberry Pi Pico. See [MicroZig - Getting Started](https://microzig.tech/docs/getting-started/) for more info.
 
 In `build.zig`:
 
