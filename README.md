@@ -5,6 +5,8 @@
 - [Usage (Zig)](#usage-zig)
   - [Add libnarnia to your project](#add-libnarnia-to-your-project)
   - [Zig API usage](#zig-api-usage)
+- [Usage (MicroZig)](#usage-microzig)
+  - [Zig API usage with MicroZig](#zig-api-usage-with-microzig)
 - [Schedules](#schedules)
 - [Threading and lifetimes](#threading-and-lifetimes)
 - [Usage (C bindings)](#usage-c-bindings)
@@ -145,6 +147,150 @@ python3 -m http.server 8000 -d zig-out/docs
 ```
 
 And go to `http://localhost:8000`
+
+## Usage (MicroZig)
+
+> [!NOTE]
+> MicroZig requires Zig master.
+
+```sh
+zig fetch --save git+https://github.com/utox39/libnarnia.git#zig-master
+```
+
+> [!NOTE]
+> This guide uses the Raspberry Pi Pico. See [MicroZig - Getting Started](https://microzig.tech/docs/getting-started/) for more info
+
+In `build.zig`:
+
+```zig
+const std = @import("std");
+const microzig = @import("microzig");
+
+const MicroBuild = microzig.MicroBuild(
+    .{
+        .rp2xxx = true,
+    },
+);
+
+pub fn build(b: *std.Build) void {
+    const mz_dep = b.dependency("microzig", .{});
+    const mb = MicroBuild.init(b, mz_dep) orelse return;
+
+    const libnarnia = b.dependency("libnarnia", .{
+        .optimize = .ReleaseSmall,
+    });
+
+    const firmware = mb.add_firmware(.{
+        .name = "blinky-with-libnarnia",
+        .target = mb.ports.rp2xxx.boards.raspberrypi.pico,
+        .optimize = .ReleaseSmall,
+        .root_source_file = b.path("src/main.zig"),
+    });
+
+    firmware.add_app_import("libnarnia", libnarnia.module("libnarnia"), .{});
+
+    mb.install_firmware(firmware, .{});
+}
+```
+
+### Zig API usage with MicroZig
+
+```zig
+const std = @import("std");
+const microzig = @import("microzig");
+const rp2xxx = microzig.hal;
+const time = rp2xxx.time;
+const narnia = @import("libnarnia");
+
+const panic = microzig.panic;
+const std_options = microzig.std_options(.{});
+
+comptime {
+    _ = microzig.export_startup();
+}
+
+const pin_config = rp2xxx.pins.GlobalConfiguration{
+    .GPIO25 = .{
+        .name = "internal_led",
+        .direction = .out,
+    },
+    .GPIO2 = .{
+        .name = "green_led",
+        .direction = .out,
+    },
+    .GPIO3 = .{
+        .name = "yellow_led",
+        .direction = .out,
+    },
+    .GPIO4 = .{
+        .name = "red_led",
+        .direction = .out,
+    },
+};
+
+fn sleepSec(sec: i64) void {
+    time.sleep_ms(@as(u32, @intCast(sec)) * 1000);
+}
+
+fn timeSinceBoot() i64 {
+    return @intCast(time.get_time_since_boot().to_us() / std.time.us_per_s);
+}
+
+fn blinkLedCallback(ctx: ?*anyopaque) void {
+    const led: *const rp2xxx.gpio.Pin = @ptrCast(@alignCast(ctx.?));
+    led.toggle();
+    time.sleep_ms(1000);
+    led.toggle();
+}
+
+pub fn main() !void {
+    var scheduler: narnia.SchedulerMicro.SchedulerMicro(4, false) = .init;
+
+    const now = timeSinceBoot();
+
+    const pins = pin_config.apply();
+    var internal = pins.internal_led;
+    var green = pins.green_led;
+    var yellow = pins.yellow_led;
+    var red = pins.red_led;
+
+    _ = try scheduler.add(
+        .{ .every_n_seconds = .{ .n = 10 } },
+        "blink internal led",
+        blinkLedCallback,
+        &internal,
+        now,
+    );
+
+    _ = try scheduler.add(
+        .{ .every_n_seconds = .{ .n = 1 } },
+        "blink green led",
+        blinkLedCallback,
+        &green,
+        now,
+    );
+
+    _ = try scheduler.add(
+        .{ .every_n_seconds = .{ .n = 2 } },
+        "blink yellow led",
+        blinkLedCallback,
+        &yellow,
+        now,
+    );
+
+    _ = try scheduler.add(
+        .{ .every_n_seconds = .{ .n = 3 } },
+        "blink red led",
+        blinkLedCallback,
+        &red,
+        now,
+    );
+
+    scheduler.start(.{ .now = timeSinceBoot, .sleep = sleepSec });
+}
+```
+
+Tested with [MicroZig v0.17.10](https://github.com/ZigEmbeddedGroup/microzig/releases/tag/0.17.10)
 
 ## Schedules
 
